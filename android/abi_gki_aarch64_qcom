@@ -1165,6 +1165,7 @@
   init_net
   __init_rwsem
   init_srcu_struct
+  init_task
   init_timer_key
   init_uts_ns
   init_wait_entry
