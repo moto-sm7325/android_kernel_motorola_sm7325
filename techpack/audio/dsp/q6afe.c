@@ -30,7 +30,10 @@
 #define AFE_PARAM_ID_AWDSP_RX_SET_ENABLE	(0x10013D11)
 #define AFE_PARAM_ID_AWDSP_TX_SET_ENABLE	(0x10013D13)
 #define AFE_PARAM_ID_AWDSP_RX_PARAMS            (0x10013D12)
+
+void aw_cal_unmap_memory(void);
 #endif /* #ifdef CONFIG_SND_SOC_AWINIC_AW882XX */
+
 #define WAKELOCK_TIMEOUT	5000
 #define AFE_CLK_TOKEN	1024
 #define AFE_NOWAIT_TOKEN	2048
@@ -971,6 +974,10 @@ static int32_t afe_callback(struct apr_client_data *data, void *priv)
 		return -EINVAL;
 	}
 	if (data->opcode == RESET_EVENTS) {
+		#ifdef CONFIG_SND_SOC_AWINIC_AW882XX
+			aw_cal_unmap_memory();
+		#endif /*CONFIG_SND_SOC_AWINIC_AW882XX*/
+
 		pr_debug("%s: reset event = %d %d apr[%pK]\n",
 			__func__,
 			data->reset_event, data->reset_proc, this_afe.apr);
@@ -1522,6 +1529,8 @@ static int afe_apr_send_pkt(void *data, wait_queue_head_t *wait)
 				pr_err_ratelimited("%s: request timedout\n",
 					__func__);
 				ret = -ETIMEDOUT;
+				trace_printk("%s: wait for ADSP response timed out\n",
+					__func__);
 			} else if (atomic_read(&this_afe.status) > 0) {
 				pr_err("%s: DSP returned error[%s]\n", __func__,
 					adsp_err_get_err_str(atomic_read(
@@ -2165,30 +2174,31 @@ static int afe_send_cal_block(u16 port_id, struct cal_block_data *cal_block)
 		result = -EINVAL;
 		goto done;
 	}
-	if (cal_block->cal_data.size != 0) {
-	       payload_size = cal_block->cal_data.size;
-	       mem_hdr.data_payload_addr_lsw =
-	          lower_32_bits(cal_block->cal_data.paddr);
-	       mem_hdr.data_payload_addr_msw =
-                    msm_audio_populate_upper_32_bits(cal_block->cal_data.paddr);
-	       mem_hdr.mem_map_handle = cal_block->map_data.q6map_handle;
-
-	       pr_debug("%s: AFE cal sent for device port = 0x%x, cal size = %zd, cal addr = 0x%pK\n",
-			       __func__, port_id,
-			       cal_block->cal_data.size, &cal_block->cal_data.paddr);
-
-	       result = q6afe_set_params(port_id, q6audio_get_port_index(port_id),
-				  &mem_hdr, NULL, payload_size);
-	       if (result)
-                   pr_err("%s: AFE cal for port 0x%x failed %d\n",
-		              __func__, port_id, result);
+	if (cal_block->cal_data.size < 0) {
+		pr_debug("%s: AFE cal has invalid size!\n", __func__);
+		result = -EINVAL;
+		goto done;
 	}
-	else {
-                pr_debug("%s: AFE cal has invalid size!\n", __func__);
-                result = -EINVAL;
-                goto done;
-        }
+	if (cal_block->cal_data.size == 0) {
+		pr_debug("%s: AFE cal size is zero!\n", __func__);
+		goto done;
+	}
+	payload_size = cal_block->cal_data.size;
+	mem_hdr.data_payload_addr_lsw =
+		lower_32_bits(cal_block->cal_data.paddr);
+	mem_hdr.data_payload_addr_msw =
+		msm_audio_populate_upper_32_bits(cal_block->cal_data.paddr);
+	mem_hdr.mem_map_handle = cal_block->map_data.q6map_handle;
 
+	pr_debug("%s: AFE cal sent for device port = 0x%x, cal size = %zd, cal addr = 0x%pK\n",
+		__func__, port_id,
+		cal_block->cal_data.size, &cal_block->cal_data.paddr);
+
+	result = q6afe_set_params(port_id, q6audio_get_port_index(port_id),
+				  &mem_hdr, NULL, payload_size);
+	if (result)
+		pr_err("%s: AFE cal for port 0x%x failed %d\n",
+		       __func__, port_id, result);
 
 done:
 	return result;
@@ -3011,7 +3021,7 @@ int afe_send_cdc_dma_data_align(u16 port_id, u32 cdc_dma_data_align)
 {
 	struct afe_param_id_cdc_dma_data_align data_align;
 	struct param_hdr_v3 param_info;
-	int port_index = 0;
+	uint16_t port_index = 0;
 	int ret = -EINVAL;
 
 	memset(&data_align, 0, sizeof(data_align));
@@ -3203,7 +3213,7 @@ static int afe_port_topology_deregister(u16 port_id)
 	uint32_t build_major_version = 0;
 	uint32_t build_minor_version = 0;
 	uint32_t build_branch_version = 0;
-        int afe_api_version = 0;
+	uint32_t afe_api_version = 0;
 
 	ret = q6core_get_avcs_avs_build_version_info(&build_major_version,
 						     &build_minor_version,
@@ -3378,6 +3388,8 @@ int afe_send_port_power_mode(u16 port_id)
 	}
 	pr_debug("%s: AFE set power mode 0x%x  enable for port 0x%x ret %d\n",
 			__func__, power_mode, port_id, ret);
+	trace_printk("%s: AFE set power mode 0x%x  enable for port 0x%x ret %d\n",
+			__func__, power_mode, port_id, ret);
 	return ret;
 }
 EXPORT_SYMBOL(afe_send_port_power_mode);
@@ -3452,6 +3464,8 @@ int afe_send_port_island_mode(u16 port_id)
 		return ret;
 	}
 	pr_debug("%s: AFE set island mode 0x%x  enable for port 0x%x ret %d\n",
+			__func__, island_mode, port_id, ret);
+	trace_printk("%s: AFE set island mode 0x%x  enable for port 0x%x ret %d\n",
 			__func__, island_mode, port_id, ret);
 	return ret;
 }
@@ -3925,7 +3939,7 @@ int aw_send_afe_cal_apr(uint32_t rx_port_id, uint32_t tx_port_id,
 
 	if (aw_cal->map_data.dma_buf == 0) {
 		/*Minimal chunk size is 4K*/
-		aw_cal->map_data.map_size = SZ_8K;
+		aw_cal->map_data.map_size = SZ_16K;
 		result = msm_audio_ion_alloc(&(aw_cal->map_data.dma_buf),
 				aw_cal->map_data.map_size,
 				&(aw_cal->cal_data.paddr),&len,
@@ -3952,7 +3966,7 @@ int aw_send_afe_cal_apr(uint32_t rx_port_id, uint32_t tx_port_id,
 		goto err;
 	}
 
-	if (cmd_size > (SZ_8K - sizeof(struct param_hdr_v3))) {
+	if (cmd_size > (SZ_16K - sizeof(struct param_hdr_v3))) {
 		pr_err("%s: Invalid payload size = %d\n", __func__, cmd_size);
 		result = -EINVAL;
 		goto err;
@@ -5011,6 +5025,9 @@ void afe_set_island_mode_cfg(u16 port_id, u32 enable_flag)
 	} else {
 		port_index = afe_get_port_index(port_id);
 		this_afe.island_mode[port_index] = enable_flag;
+
+		trace_printk("%s: set island mode cfg 0x%x for port 0x%x\n",
+				__func__, this_afe.island_mode[port_index], port_id);
 	}
 }
 EXPORT_SYMBOL(afe_set_island_mode_cfg);
@@ -5023,7 +5040,7 @@ EXPORT_SYMBOL(afe_set_island_mode_cfg);
  */
 int afe_get_power_mode_cfg(u16 port_id, u32 *enable_flag)
 {
-	int port_index;
+	uint16_t port_index;
 	int ret = 0;
 
 	if (enable_flag) {
@@ -5047,7 +5064,7 @@ EXPORT_SYMBOL(afe_get_power_mode_cfg);
  */
 int afe_set_power_mode_cfg(u16 port_id, u32 enable_flag)
 {
-	int port_index;
+	uint16_t port_index;
 	int  ret= 0;
 
 	port_index = afe_get_port_index(port_id);
@@ -5058,6 +5075,8 @@ int afe_set_power_mode_cfg(u16 port_id, u32 enable_flag)
 	}
 	this_afe.power_mode[port_index] = enable_flag;
 
+	trace_printk("%s: set power mode cfg 0x%x for port 0x%x\n",
+			__func__, this_afe.power_mode[port_index], port_id);
 	return ret;
 }
 EXPORT_SYMBOL(afe_set_power_mode_cfg);
@@ -9787,6 +9806,15 @@ int afe_set_lpass_clock(u16 port_id, struct afe_clk_cfg *cfg)
 		 cfg->clk_root, cfg->clk_set_mode,
 		 cfg->reserved, q6audio_get_port_id(port_id));
 
+	trace_printk("%s: Minor version =0x%x clk val1 = %d\n"
+		 "clk val2 = %d, clk src = 0x%x\n"
+		 "clk root = 0x%x clk mode = 0x%x resrv = 0x%x\n"
+		 "port id = 0x%x\n",
+		 __func__, cfg->i2s_cfg_minor_version,
+		 cfg->clk_val1, cfg->clk_val2, cfg->clk_src,
+		 cfg->clk_root, cfg->clk_set_mode,
+		 cfg->reserved, q6audio_get_port_id(port_id));
+
 	ret = q6afe_pack_and_set_param_in_band(port_id,
 					       q6audio_get_port_index(port_id),
 					       param_hdr, (u8 *) &clk_cfg);
@@ -10198,12 +10226,21 @@ int afe_set_lpass_clk_cfg(int index, struct afe_clk_set *cfg)
 		 cfg->clk_id, cfg->clk_freq_in_hz, cfg->clk_attri,
 		 cfg->clk_root, cfg->enable);
 
+	trace_printk("%s: Minor version =0x%x clk id = %d\n"
+		 "clk freq (Hz) = %d, clk attri = 0x%x\n"
+		 "clk root = 0x%x clk enable = 0x%x\n",
+		 __func__, cfg->clk_set_minor_version,
+		 cfg->clk_id, cfg->clk_freq_in_hz, cfg->clk_attri,
+		 cfg->clk_root, cfg->enable);
+
 	ret = q6afe_svc_pack_and_set_param_in_band(index, param_hdr,
 						   (u8 *) cfg);
 	if (ret < 0) {
 		if (__ratelimit(&rtl))
 			pr_err_ratelimited("%s: AFE clk cfg failed with ret %d\n",
 				__func__, ret);
+		trace_printk("%s: AFE clk cfg failed with ret %d\n",
+		       __func__, ret);
 	}
 	mutex_unlock(&this_afe.afe_clk_lock);
 	return ret;
@@ -10222,7 +10259,7 @@ int afe_set_lpass_clock_v2(u16 port_id, struct afe_clk_set *cfg)
 {
 	int index = 0;
 	int ret = 0;
-	int idx = 0;
+	u16 idx = 0;
 	uint32_t build_major_version = 0;
 	uint32_t build_minor_version = 0;
 	uint32_t build_branch_version = 0;
@@ -12273,6 +12310,8 @@ int afe_vote_lpass_core_hw(uint32_t hw_block_id, char *client_name,
 	pr_debug("%s: lpass core hw vote opcode[0x%x] hw id[0x%x]\n",
 		__func__, cmd_ptr->hdr.opcode, cmd_ptr->hw_block_id);
 
+	trace_printk("%s: lpass core hw vote opcode[0x%x] hw id[0x%x]\n",
+		__func__, cmd_ptr->hdr.opcode, cmd_ptr->hw_block_id);
 	*client_handle = 0;
 
 	ret = afe_apr_send_clk_pkt((uint32_t *)cmd_ptr,
@@ -12312,6 +12351,7 @@ int afe_unvote_lpass_core_hw(uint32_t hw_block_id, uint32_t client_handle)
 
 	if (!this_afe.lpass_hw_core_client_hdl[hw_block_id]) {
 		pr_debug("%s: SSR in progress, return\n", __func__);
+		trace_printk("%s: SSR in progress, return\n", __func__);
 		goto done;
 	}
 
@@ -12329,6 +12369,9 @@ int afe_unvote_lpass_core_hw(uint32_t hw_block_id, uint32_t client_handle)
 	cmd_ptr->client_handle = client_handle;
 
 	pr_debug("%s: lpass core hw unvote opcode[0x%x] hw id[0x%x]\n",
+		__func__, cmd_ptr->hdr.opcode, cmd_ptr->hw_block_id);
+
+	trace_printk("%s: lpass core hw unvote opcode[0x%x] hw id[0x%x]\n",
 		__func__, cmd_ptr->hdr.opcode, cmd_ptr->hw_block_id);
 
 	if (cmd_ptr->client_handle <= 0) {
