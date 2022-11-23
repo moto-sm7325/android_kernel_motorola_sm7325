@@ -335,7 +335,9 @@ static int gsx_gesture_init(struct goodix_ts_core *cd,
 	gsx->ts_core = cd;
 	/*enable all gesture wakeup by default */
 	gsx->ts_core->gesture_type = GESTURE_SINGLE_TAP |GESTURE_FOD_PRESS;
-	cd->ts_event.gesture_data[0] = 0;
+	cd->zerotap_data[0] = 0;
+	//default on the fod event
+	cd->fod_enable = true;
 	atomic_set(&gsx_gesture->registered, 1);
 	return 0;
 }
@@ -375,7 +377,7 @@ static int gsx_gesture_ist(struct goodix_ts_core *cd,
 	struct gesture_event_data mmi_event;
 	static  unsigned  long  start = 0;
 	int fod_down_interval = 0;
-	int fod_down = cd->ts_event.gesture_data[0];
+	int fod_down = cd->zerotap_data[0];
 #endif
 	if (atomic_read(&cd->suspended) == 0 || cd->gesture_type == 0)
 		return EVT_CONTINUE;
@@ -420,12 +422,12 @@ static int gsx_gesture_ist(struct goodix_ts_core *cd,
 			fodx = le16_to_cpup((__le16 *)gs_event.gesture_data);
 			fody = le16_to_cpup((__le16 *)(gs_event.gesture_data + 2));
 			overlay_area = gs_event.gesture_data[4];
-			//goodix firmware do not send coordinate, we need hardcode a vaild coordinate
+			//goodix firmware do not send coordinate, need mmi touch to define a vaild coordinate thru dts
 			mmi_event.evcode = 2;
-			mmi_event.evdata.x= 540;
-			mmi_event.evdata.y= 2164;
+			mmi_event.evdata.x= 0;
+			mmi_event.evdata.y= 0;
 
-			ts_debug("Get FOD-DOWN gesture down:%d interval:%d",fod_down,fod_down_interval);
+			ts_debug("Get FOD-DOWN gesture:%d interval:%d",fod_down,fod_down_interval);
 			if(fod_down_interval > 2000)
 				fod_down = 0;
 			if(fod_down_interval > 0 && fod_down_interval < 250 && fod_down) {
@@ -517,12 +519,16 @@ static int gsx_gesture_ist(struct goodix_ts_core *cd,
 #endif
 
 re_send_ges_cmd:
+#if defined(PRODUCT_TUNDRA)
+	if (hw_ops->gesture(cd, 0x80))
+#else
 	if (hw_ops->gesture(cd, 0))
+#endif
 		ts_info("warning: failed re_send gesture cmd");
 gesture_ist_exit:
 	if (!cd->tools_ctrl_sync)
 		hw_ops->after_event_handler(cd);
-	cd->ts_event.gesture_data[0] = fod_down;
+	cd->zerotap_data[0] = fod_down;
 	return EVT_CANCEL_IRQEVT;
 }
 

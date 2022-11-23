@@ -34,10 +34,13 @@
 /*****************************************************************************
 * Macro definitions using #define
 *****************************************************************************/
-#define FTS_INI_FILE_PATH                       "/vendor/firmware"
+#define FTS_INI_FILE_PATH                       "/vendor/firmware/"
 #define FTS_OUT_FILE_PATH                       "/data/vendor/touchrec/"
 #define FTS_CSV_FILE_NAME                       "testdata.csv"
 #define FTS_TXT_FILE_NAME                       "testresult.txt"
+#define FTS_LIMIT_FILE_NAME                     "csot_focal_test_limits.ini"
+#define FTS_TEST_RESULT_PASS                    "PASS"
+#define FTS_TEST_RESULT_FAIL                    "FAIL"
 #define false 0
 #define true  1
 #define TEST_ICSERIES_LEN                       (8)
@@ -50,7 +53,7 @@
 #define CSV_BUFFER_LEN                          (1024*80*5)
 #define TXT_BUFFER_LEN                          (1024*80*5)
 
-#define TEST_SAVE_FAIL_RESULT                   0
+#define TEST_SAVE_FAIL_RESULT                   1
 
 /*-----------------------------------------------------------
 Test Status

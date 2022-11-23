@@ -27,6 +27,7 @@
 #include <linux/delay.h>
 #include <linux/mmi_wake_lock.h>
 #include <soc/qcom/mmi_boot_info.h>
+#include <linux/time64.h>
 
 #include "mmi_charger.h"
 
@@ -67,6 +68,7 @@ enum {
 	NOTIFY_EVENT_TYPE_CHG_RATE = 0,
 	NOTIFY_EVENT_TYPE_LPD_PRESENT,
 	NOTIFY_EVENT_TYPE_VBUS_PRESENT,
+	NOTIFY_EVENT_TYPE_POWER_WATT,
 };
 
 static char *charge_rate[] = {
@@ -140,6 +142,11 @@ struct mmi_battery_pack {
 };
 
 struct mmi_charger_profile {
+	//for not FFC battery profile
+	int noffc_fg_iterm;
+	int noffc_chrg_iterm;
+	int noffc_max_fv_mv;
+
 	int fg_iterm;
         int chrg_iterm;
         int max_fv_mv;
@@ -208,6 +215,7 @@ struct mmi_charger_chip {
 	int			max_charger_rate;
 	bool			vbus_present;
 	bool			lpd_present;
+	int			power_watt;
 
 	int			suspended;
 	int			demo_mode;
@@ -240,6 +248,7 @@ struct mmi_charger_chip {
 
 	struct mmi_vote		suspend_charger_vote;
 	struct mmi_vote		disable_charging_vote;
+	uint32_t		factory_kill_debounce_ms;
 };
 
 static int mmi_vote(struct mmi_vote *vote, const char *voter,
@@ -338,6 +347,8 @@ static ssize_t state_sync_store(struct device *dev,
 					NOTIFY_EVENT_TYPE_LPD_PRESENT);
 		mmi_notify_charger_event(this_chip,
 					NOTIFY_EVENT_TYPE_VBUS_PRESENT);
+		mmi_notify_charger_event(this_chip,
+					NOTIFY_EVENT_TYPE_POWER_WATT);
 		mutex_unlock(&this_chip->charger_lock);
 		cancel_delayed_work(&this_chip->heartbeat_work);
 		schedule_delayed_work(&this_chip->heartbeat_work,
@@ -935,10 +946,14 @@ static int mmi_get_charger_profile(struct mmi_charger_chip *chip,
 	if (rc)
 		charger->profile.chrg_iterm = 300;
 
+	charger->profile.noffc_chrg_iterm = charger->profile.chrg_iterm;
+
 	rc = of_property_read_u32(node, "mmi,fg-iterm-ma",
 				  &charger->profile.fg_iterm);
 	if (rc)
 		charger->profile.fg_iterm = charger->profile.chrg_iterm + 50;
+
+	charger->profile.noffc_fg_iterm = charger->profile.fg_iterm;
 
 	rc = of_property_read_u32(node, "mmi,vfloat-comp-uv",
 				  &charger->profile.vfloat_comp_mv);
@@ -950,6 +965,8 @@ static int mmi_get_charger_profile(struct mmi_charger_chip *chip,
 				  &charger->profile.max_fv_mv);
 	if (rc)
 		charger->profile.max_fv_mv = 4400;
+
+	charger->profile.noffc_max_fv_mv = charger->profile.max_fv_mv;
 
 	rc = of_property_read_u32(node, "mmi,max-fcc-ma",
 				  &charger->profile.max_fcc_ma);
@@ -1048,6 +1065,7 @@ static int mmi_get_charger_profile(struct mmi_charger_chip *chip,
 	return 0;
 }
 
+#define TURBO_CHRG_FFC_THRSH_MW 25000
 static void mmi_update_charger_profile(struct mmi_charger_chip *chip,
 			       struct mmi_charger *charger)
 {
@@ -1055,9 +1073,17 @@ static void mmi_update_charger_profile(struct mmi_charger_chip *chip,
 	int temp;
 	int num_zones;
 	struct mmi_ffc_zone *zones;
+	struct mmi_charger_info *chg_info = &charger->chg_info;
 
 	if (!chip) {
 		pr_err("called before chg valid!\n");
+		return;
+	}
+
+	if (!(chg_info->chrg_pmax_mw > TURBO_CHRG_FFC_THRSH_MW)) {
+		charger->profile.max_fv_mv = charger->profile.noffc_max_fv_mv;
+		charger->profile.fg_iterm = charger->profile.noffc_fg_iterm;
+		charger->profile.chrg_iterm = charger->profile.noffc_chrg_iterm;
 		return;
 	}
 
@@ -1381,6 +1407,7 @@ static void mmi_update_charger_status(struct mmi_charger_chip *chip,
 				struct mmi_charger *charger)
 {
 	bool voltage_full;
+	int stop_recharge_hyst;
 	enum charging_limit_modes charging_limit_modes;
 	struct mmi_charger_profile *profile = &charger->profile;
 	struct mmi_charger_status *status = &charger->status;
@@ -1429,10 +1456,22 @@ static void mmi_update_charger_status(struct mmi_charger_chip *chip,
 	} else if (!status->temp_zone) {
 		status->pres_chrg_step = STEP_MAX;
 		/* Skip for empty temperature zone */
-	} else if ((status->pres_chrg_step == STEP_NONE) ||
-		   (status->pres_chrg_step == STEP_STOP)) {
+	} else if (status->pres_chrg_step == STEP_NONE) {
 		if (status->temp_zone->norm_mv &&
 		    ((batt_info->batt_mv + HYST_STEP_MV) >= status->temp_zone->norm_mv)) {
+			if (status->temp_zone->fcc_norm_ma)
+				status->pres_chrg_step = STEP_NORM;
+			else
+				status->pres_chrg_step = STEP_STOP;
+		} else
+			status->pres_chrg_step = STEP_MAX;
+	} else if (status->pres_chrg_step == STEP_STOP) {
+		if (batt_info->batt_temp > COOL_TEMP)
+			stop_recharge_hyst = 2 * HYST_STEP_MV;
+		else
+			stop_recharge_hyst = 5 * HYST_STEP_MV;
+		if (status->temp_zone->norm_mv &&
+			((batt_info->batt_mv + stop_recharge_hyst) >= status->temp_zone->norm_mv)) {
 			if (status->temp_zone->fcc_norm_ma)
 				status->pres_chrg_step = STEP_NORM;
 			else
@@ -1473,8 +1512,14 @@ static void mmi_update_charger_status(struct mmi_charger_chip *chip,
 				status->pres_chrg_step = STEP_FULL;
 		}
 	} else if (status->pres_chrg_step == STEP_FULL) {
+#ifdef CONFIG_MMI_RECHARGER_HAWAO_MODE
+		if ((batt_info->batt_soc <= 98) ||
+			batt_info->batt_mv < (profile->max_fv_mv - 100 * 2))
+#else
 		if ((batt_info->batt_soc <= 99) ||
-			batt_info->batt_mv < (profile->max_fv_mv - HYST_STEP_MV * 2)) {
+			batt_info->batt_mv < (profile->max_fv_mv - HYST_STEP_MV * 2))
+#endif
+		{
 			cfg->taper_kickoff = true;
 			status->pres_chrg_step = STEP_NORM;
 		}
@@ -1641,6 +1686,11 @@ static void mmi_notify_charger_event(struct mmi_charger_chip *chip, int type)
 			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
 				"POWER_SUPPLY_VBUS_PRESENT=%s",
 				chip->vbus_present? "true" : "false");
+			break;
+		case NOTIFY_EVENT_TYPE_POWER_WATT:
+			scnprintf(event_string, CHG_SHOW_MAX_SIZE,
+				"POWER_SUPPLY_POWER_WATT=%d",
+				chip->power_watt / 1000);
 			break;
 		default:
 			mmi_err(chip, "Invalid notify event type %d\n", type);
@@ -1847,6 +1897,7 @@ static void mmi_update_battery_status(struct mmi_charger_chip *chip)
 	struct mmi_battery_info *batt_info = NULL;
 	bool vbus_present = false;
 	bool lpd_present = false;
+	int power_watt = 0;
 
 	mutex_lock(&chip->battery_lock);
 	list_for_each_entry(charger, &chip->charger_list, list) {
@@ -1875,6 +1926,9 @@ static void mmi_update_battery_status(struct mmi_charger_chip *chip)
 		charger_rate = mmi_get_battery_charger_rate(charger);
 		if (battery->charger_rate < charger_rate)
 			battery->charger_rate = charger_rate;
+
+		if (charger->chg_info.chrg_pmax_mw > power_watt)
+			power_watt = charger->chg_info.chrg_pmax_mw;
 
 		/* update charging status */
 		if (batt_info->batt_status == POWER_SUPPLY_STATUS_FULL ||
@@ -1938,14 +1992,14 @@ static void mmi_update_battery_status(struct mmi_charger_chip *chip)
 	if (voltage_mv > 0 && chip->combo_voltage_mv != voltage_mv) {
 		chip->combo_voltage_mv = voltage_mv;
 	}
-	if (current_ma > 0 && chip->combo_current_ma != current_ma) {
+	if (chip->combo_current_ma != current_ma) {
 		chip->combo_current_ma = current_ma;
 	}
 	if (chip->max_charger_rate != max_charger_rate) {
 		mmi_changed = true;
 		chip->max_charger_rate = max_charger_rate;
 		mmi_notify_charger_event(chip, NOTIFY_EVENT_TYPE_CHG_RATE);
-		mmi_info(chip, "%s charger is detected\n",
+		mmi_err(chip, "%s charger is detected\n",
 			charge_rate[chip->max_charger_rate]);
 	}
 
@@ -1963,6 +2017,13 @@ static void mmi_update_battery_status(struct mmi_charger_chip *chip)
 		mmi_notify_charger_event(chip, NOTIFY_EVENT_TYPE_VBUS_PRESENT);
 		mmi_info(chip, "vbus is %s\n",
 			vbus_present? "present" : "absent");
+	}
+
+	if (chip->power_watt != power_watt) {
+		mmi_changed = true;
+		chip->power_watt = power_watt;
+		mmi_notify_charger_event(chip, NOTIFY_EVENT_TYPE_POWER_WATT);
+		mmi_info(chip, "charger power is %d mW\n", power_watt);
 	}
 
 	list_for_each_entry(battery, &chip->battery_list, list) {
@@ -2011,6 +2072,9 @@ static void mmi_charger_heartbeat_work(struct work_struct *work)
 	struct mmi_charger_chip *chip = container_of(work,
 						struct mmi_charger_chip,
 						heartbeat_work.work);
+	struct timespec64 now;
+	static struct timespec64 start;
+	uint32_t elapsed_ms;
 
 	/* Have not been resumed so wait another 100 ms */
 	if (chip->suspended & IS_SUSPENDED) {
@@ -2053,13 +2117,22 @@ static void mmi_charger_heartbeat_work(struct work_struct *work)
 		if (chip->max_charger_rate > MMI_POWER_SUPPLY_CHARGE_RATE_NONE) {
 			mmi_dbg(chip, "Factory Kill Armed\n");
 			chip->factory_kill_armed = true;
+			ktime_get_real_ts64(&start);
 		} else if (chip->factory_kill_armed && !factory_kill_disable) {
-			mmi_warn(chip, "Factory kill power off\n");
+			ktime_get_real_ts64(&now);
+			elapsed_ms = (now.tv_sec - start.tv_sec) * 1000;
+			elapsed_ms += (now.tv_nsec - start.tv_nsec) / 1000000;
+			if (elapsed_ms < chip->factory_kill_debounce_ms) {
+				mmi_err(chip, "Factory kill debounce elapsed_ms:%d\n",
+					elapsed_ms);
+			} else {
+				mmi_err(chip, "Factory kill power off\n");
 #if (KERNEL_VERSION(5, 10, 0) > LINUX_VERSION_CODE) || defined(MMI_GKI_API_ALLOWANCE)
-			orderly_poweroff(true);
+				orderly_poweroff(true);
 #else
-			kernel_power_off();
+				kernel_power_off();
 #endif
+			}
 		} else {
 			chip->factory_kill_armed = false;
 		}
@@ -2561,6 +2634,11 @@ static int mmi_parse_dt(struct mmi_charger_chip *chip)
 
 	chip->start_factory_kill_disabled =
 			of_property_read_bool(node, "mmi,start-factory-kill-disabled");
+
+	rc = of_property_read_u32(node, "mmi,factory-kill-debounce-ms",
+				  &chip->factory_kill_debounce_ms);
+	if (rc)
+		chip->factory_kill_debounce_ms = 0;
 
 	rc = of_property_read_u32(node, "mmi,upper-limit-capacity",
 				  &chip->upper_limit_capacity);

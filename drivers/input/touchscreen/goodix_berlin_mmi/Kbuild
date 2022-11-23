@@ -8,7 +8,8 @@ goodix_brl_mmi-objs := \
 					goodix_ts_utils.o \
 					goodix_brl_fwupdate.o \
 					goodix_ts_inspect.o \
-					goodix_ts_tools.o
+					goodix_ts_tools.o \
+					goodix_ts_config.o
 
 ifneq ($(filter m y, $(CONFIG_DRM_PANEL_EVENT_NOTIFICATIONS)),)
 	ccflags-y += -DCONFIG_DRM_PANEL_EVENT_NOTIFICATIONS
@@ -43,6 +44,15 @@ endif
 
 ifneq ($(filter m y,$(CONFIG_TARGET_BUILD_FACROTY)),)
     ccflags-y += -DGTP_SAVE_IN_CSV
+endif
+
+ifneq ($(filter m y,$(CONFIG_GTP_LAST_TIME)),)
+    ccflags-y += -DCONFIG_GTP_LAST_TIME
+endif
+
+ifneq ($(filter m y,$(CONFIG_GTP_DDA_STYLUS)),)
+    ccflags-y += -DCONFIG_GTP_DDA_STYLUS
+    goodix_brl_mmi-objs += goodix_ts_dda.o
 endif
 
 ifneq ($(filter m y,$(CONFIG_INPUT_TOUCHSCREEN_MMI)),)

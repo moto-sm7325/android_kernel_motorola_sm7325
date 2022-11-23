@@ -41,6 +41,23 @@ static const unsigned int BOOST_CURRENT_LIMIT[] = {
 };
 #endif
 
+#if (defined(__SGM41513_CHIP_ID__) || defined(__SGM41513A_CHIP_ID__) || defined(__SGM41513D_CHIP_ID__))
+
+static const unsigned int IPRECHG_CURRENT_STABLE[] = {
+	5000, 10000, 15000, 20000, 30000, 40000, 50000, 60000,
+	80000, 100000, 120000, 140000, 160000, 180000, 200000, 240000
+};
+
+static const unsigned int ITERM_CURRENT_STABLE[] = {
+	5000, 10000, 15000, 20000, 30000, 40000, 50000, 60000,
+	80000, 100000, 120000, 140000, 160000, 180000, 200000, 240000
+};
+
+static const unsigned int DYNAMIC_VINDPM_TRACK[] = {
+	0, 200000, 250000, 300000
+};
+#endif
+
 enum SGM4154x_VREG_FT {
 	VREG_FT_DISABLE,
 	VREG_FT_UP_8mV,
@@ -61,6 +78,8 @@ static enum power_supply_usb_type sgm4154x_usb_type[] = {
 	POWER_SUPPLY_USB_TYPE_DCP,
 	POWER_SUPPLY_USB_TYPE_CDP,
 };
+
+extern bool mmi_is_factory_mode(void);
 
 #define WAIT_I2C_COUNT 50
 #define WAIT_I2C_TIME 10
@@ -176,6 +195,12 @@ static int sgm4154x_get_ichg_curr(struct sgm4154x_device *sgm)
 static int sgm4154x_set_term_curr(struct sgm4154x_device *sgm, int term_current)
 {
 	int reg_val;
+
+#if (defined(__SGM41513_CHIP_ID__) || defined(__SGM41513A_CHIP_ID__) || defined(__SGM41513D_CHIP_ID__))
+	for(reg_val = 1; reg_val < 16 && term_current >= ITERM_CURRENT_STABLE[reg_val]; reg_val++)
+		;
+	reg_val--;
+#else
 	int offset = SGM4154x_TERMCHRG_I_MIN_uA;
 
 	if (term_current < SGM4154x_TERMCHRG_I_MIN_uA)
@@ -184,7 +209,7 @@ static int sgm4154x_set_term_curr(struct sgm4154x_device *sgm, int term_current)
 		term_current = SGM4154x_TERMCHRG_I_MAX_uA;
 
 	reg_val = (term_current - offset) / SGM4154x_TERMCHRG_CURRENT_STEP_uA;
-
+#endif
 	return mmi_regmap_update_bits(sgm, SGM4154x_CHRG_CTRL_3,
 				  SGM4154x_TERMCHRG_CUR_MASK, reg_val);
 }
@@ -192,6 +217,12 @@ static int sgm4154x_set_term_curr(struct sgm4154x_device *sgm, int term_current)
 static int sgm4154x_set_prechrg_curr(struct sgm4154x_device *sgm, int pre_current)
 {
 	int reg_val;
+
+#if (defined(__SGM41513_CHIP_ID__) || defined(__SGM41513A_CHIP_ID__) || defined(__SGM41513D_CHIP_ID__))
+	for(reg_val = 1; reg_val < 16 && pre_current >= IPRECHG_CURRENT_STABLE[reg_val]; reg_val++)
+		;
+	reg_val--;
+#else
 	int offset = SGM4154x_PRECHRG_I_MIN_uA;
 
 	if (pre_current < SGM4154x_PRECHRG_I_MIN_uA)
@@ -200,6 +231,7 @@ static int sgm4154x_set_prechrg_curr(struct sgm4154x_device *sgm, int pre_curren
 		pre_current = SGM4154x_PRECHRG_I_MAX_uA;
 
 	reg_val = (pre_current - offset) / SGM4154x_PRECHRG_CURRENT_STEP_uA;
+#endif
 	reg_val = reg_val << 4;
 	return mmi_regmap_update_bits(sgm, SGM4154x_CHRG_CTRL_3,
 				  SGM4154x_PRECHRG_CUR_MASK, reg_val);
@@ -212,15 +244,56 @@ static int sgm4154x_set_ichrg_curr(struct sgm4154x_device *sgm, int chrg_curr)
 	int ret;
 	int reg_val;
 
+#if (defined(__SGM41513_CHIP_ID__) || defined(__SGM41513A_CHIP_ID__) || defined(__SGM41513D_CHIP_ID__))
+	if (chrg_curr <= 40000)
+		reg_val = chrg_curr / 5000;
+	else if (chrg_curr <= 110000)
+		reg_val = 0x08 + (chrg_curr -40000) / 10000;
+	else if (chrg_curr <= 270000)
+		reg_val = 0x0F + (chrg_curr -110000) / 20000;
+	else if (chrg_curr <= 540000)
+		reg_val = 0x17 + (chrg_curr -270000) / 30000;
+	else if (chrg_curr <= 1500000)
+		reg_val = 0x20 + (chrg_curr -540000) / 60000;
+	else if (chrg_curr <= 2940000)
+		reg_val = 0x30 + (chrg_curr -1500000) / 120000;
+	else
+		reg_val = 0x3d;
+#else
 	if (chrg_curr < SGM4154x_ICHRG_I_MIN_uA)
 		chrg_curr = SGM4154x_ICHRG_I_MIN_uA;
 	else if ( chrg_curr > sgm->init_data.max_ichg)
 		chrg_curr = sgm->init_data.max_ichg;
 
+	/* enable dynamic adjust battery voltage */
+	if(sgm->enable_dynamic_adjust_batvol)
+	    sgm->final_cc = chrg_curr;
+
 	reg_val = chrg_curr / SGM4154x_ICHRG_CURRENT_STEP_uA;
+#endif
 
 	ret = mmi_regmap_update_bits(sgm, SGM4154x_CHRG_CTRL_2,
 				  SGM4154x_ICHRG_CUR_MASK, reg_val);
+
+	return ret;
+}
+
+/* enable dynamic adjust battery voltage */
+static int sgm4154x_set_chrg_adjust_volt(struct sgm4154x_device *sgm, int chrg_volt, int adjust)
+{
+	int ret;
+	int reg_val;
+
+	if (chrg_volt < SGM4154x_VREG_V_MIN_uV)
+		chrg_volt = SGM4154x_VREG_V_MIN_uV;
+	else if (chrg_volt > sgm->init_data.max_vreg)
+		chrg_volt = sgm->init_data.max_vreg;
+
+	sgm->final_cv = chrg_volt;
+	reg_val = (chrg_volt-SGM4154x_VREG_V_MIN_uV) / SGM4154x_VREG_V_STEP_uV + adjust;
+	reg_val = reg_val<<3;
+	ret = mmi_regmap_update_bits(sgm, SGM4154x_CHRG_CTRL_4,
+				  SGM4154x_VREG_V_MASK, reg_val);
 
 	return ret;
 }
@@ -274,6 +347,7 @@ static int sgm4154x_set_chrg_volt(struct sgm4154x_device *sgm, int chrg_volt)
 	reg_val = (chrg_volt-SGM4154x_VREG_V_MIN_uV) / SGM4154x_VREG_V_STEP_uV;
 
 	switch(chrg_volt) {
+	case 4512000:
 	case 4480000:
 	case 4450000:
 		reg_val++;
@@ -347,8 +421,11 @@ static int sgm4154x_get_usb_voltage_now(struct sgm4154x_device *sgm, int *val)
 		dev_err(sgm->dev, "Couldn't read USBIN over vadc rc=%d\n", rc);
 		return rc;
 	}
-
+#ifdef CONFIG_MMI_SGM41513_CHARGER
+	*val = raw_date * 1000;
+#else
 	*val = raw_date * 3;
+#endif
 
 	return 0;
 }
@@ -642,6 +719,24 @@ static int sgm4154x_get_input_volt_lim(struct sgm4154x_device *sgm)
 	return vlim;
 }
 
+#ifdef __SGM41513_CHIP_ID__
+static int sgm4154x_set_dynamic_vindpm_track(struct sgm4154x_device *sgm, int track_uv)
+{
+	int reg_val = 0;
+	int ret = 0;
+
+	for(reg_val = 1; reg_val < 4 && track_uv >= DYNAMIC_VINDPM_TRACK[reg_val]; reg_val++);
+	reg_val--;
+
+	pr_info("%s track_uv: %d, reg_val: %d\n", __func__, track_uv, reg_val);
+
+	ret = mmi_regmap_update_bits(sgm, SGM4154x_CHRG_CTRL_7,
+				  SGM4154x_DYNAMIC_VINDPM_TRACK_MASK, reg_val);
+
+	return ret;
+}
+#endif
+
 static int sgm4154x_set_input_curr_lim(struct sgm4154x_device *sgm, int iindpm)
 {
 	int ret;
@@ -651,11 +746,15 @@ static int sgm4154x_set_input_curr_lim(struct sgm4154x_device *sgm, int iindpm)
 		reg_val = 0;
 	else if (iindpm >= SGM4154x_IINDPM_I_MAX_uA)
 		reg_val = 0x1F;
+#if (defined(__SGM41513_CHIP_ID__) || defined(__SGM41513A_CHIP_ID__) || defined(__SGM41513D_CHIP_ID__))
+	reg_val = (iindpm-SGM4154x_IINDPM_I_MIN_uA) / SGM4154x_IINDPM_STEP_uA;
+#else
 	else if (iindpm >= SGM4154x_IINDPM_I_MIN_uA && iindpm <= 3100000)//default
 		reg_val = (iindpm-SGM4154x_IINDPM_I_MIN_uA) / SGM4154x_IINDPM_STEP_uA;
 	else if (iindpm > 3100000 && iindpm < SGM4154x_IINDPM_I_MAX_uA)
 		reg_val = 0x1E;
 
+#endif
 	ret = mmi_regmap_update_bits(sgm, SGM4154x_CHRG_CTRL_0,
 				  SGM4154x_IINDPM_I_MASK, reg_val);
 	return ret;
@@ -1025,10 +1124,11 @@ static int sgm4154x_set_otg_current(struct sgm4154x_device *sgm, int ua)
 	return ret;
 }
 
-#if defined(__SGM41542_CHIP_ID__)|| defined(__SGM41516D_CHIP_ID__)
 static int get_charger_type(struct sgm4154x_device * sgm)
 {
 	enum power_supply_usb_type usb_type;
+
+#if defined(__SGM41542_CHIP_ID__)|| defined(__SGM41516D_CHIP_ID__)
 	switch(sgm->state.chrg_type) {
 		case SGM4154x_USB_SDP:
 			usb_type = POWER_SUPPLY_USB_TYPE_SDP;
@@ -1050,10 +1150,33 @@ static int get_charger_type(struct sgm4154x_device * sgm)
 			usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 			break;
 	}
+#else
+	switch(sgm->real_charger_type) {
+		case POWER_SUPPLY_TYPE_USB:
+			usb_type = POWER_SUPPLY_USB_TYPE_SDP;
+			break;
+
+		case POWER_SUPPLY_TYPE_USB_CDP:
+			usb_type = POWER_SUPPLY_USB_TYPE_CDP;
+			break;
+
+		case POWER_SUPPLY_TYPE_USB_DCP:
+		case POWER_SUPPLY_TYPE_USB_HVDCP:
+		case POWER_SUPPLY_TYPE_USB_HVDCP_3:
+		case POWER_SUPPLY_TYPE_USB_HVDCP_3P5:
+			usb_type = POWER_SUPPLY_USB_TYPE_DCP;
+			break;
+
+		default:
+			usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+			break;
+	}
+#endif
+
 	pr_err("%s usb_type:%d\n",__func__,usb_type);
 	return usb_type;
 }
-#endif
+
 static int sgm4154x_property_is_writeable(struct power_supply *psy,
 					 enum power_supply_property prop)
 {
@@ -1264,6 +1387,10 @@ static int sgm4154x_request_dpdm(struct sgm4154x_device *sgm, bool enable)
 {
 	int rc = 0;
 
+	if(mmi_is_factory_mode() && sgm->ignore_request_dpdm) {
+		dev_err(sgm->dev, "%s ignore_request_dpdm\n", __func__);
+		return rc;
+	}
 	mutex_lock(&sgm->regulator_lock);
 		/* fetch the DPDM regulator */
 	if (!sgm->dpdm_reg && of_get_property(sgm->dev->of_node,
@@ -1397,6 +1524,40 @@ static bool sgm4154x_dpdm_detect_is_done(struct sgm4154x_device * sgm)
 }
 */
 
+/* enable dynamic adjust battery voltage */
+static void sgm4154x_adjust_constant_voltage(struct sgm4154x_device *sgm, int vbat)
+{
+	int ret, t1, t2;
+	int ft[4] = {0, 0x40, 0xC0, 0x80};
+	int reg = 0;
+
+	if (sgm->final_cv > vbat && (sgm->final_cv - vbat) < 8000)
+		return;
+	ret = mmi_regmap_read(sgm, SGM4154x_CHRG_CTRL_a, &reg);
+	if ((ret || (reg & 0x60)) && sgm->final_cv > vbat)
+		return;
+	if (sgm->final_cv > vbat) {
+		sgm->cv_tune++;
+	} else if (sgm->cv_tune > 0) {
+		sgm->cv_tune--;
+	}
+	sgm->cv_tune = min(sgm->cv_tune, 12); //limit to max 12 - 96mV
+	dev_err(sgm->dev, "cv_tune=%duV\n", sgm->cv_tune*8000);
+	t1 = sgm->cv_tune / 4;
+	t2 = sgm->cv_tune - t1*4;
+	if (t2 == 2 || t2 == 3)
+		t1++;
+	ret = mmi_regmap_update_bits(sgm, SGM4154x_CHRG_CTRL_f, SGM4154x_VREG_FT_MASK, ft[t2]);
+	ret |= sgm4154x_set_chrg_adjust_volt(sgm, sgm->final_cv, t1);
+	if (!ret)
+		return;
+	dev_err(sgm->dev, "failed to tune cv, reset the tuning\n");
+	sgm->cv_tune = 0;
+	sgm4154x_set_chrg_adjust_volt(sgm, sgm->final_cv, 0);
+	mmi_regmap_update_bits(sgm, SGM4154x_CHRG_CTRL_f, SGM4154x_VREG_FT_MASK, 0);
+	return;
+}
+
 static void charger_monitor_work_func(struct work_struct *work)
 {
 	int ret = 0;
@@ -1404,6 +1565,10 @@ static void charger_monitor_work_func(struct work_struct *work)
 	struct delayed_work *charge_monitor_work = NULL;
 	//static u8 last_chg_method = 0;
 	struct sgm4154x_state state;
+
+	/* enable dynamic adjust battery voltage */
+	union power_supply_propval val_battery = {0};
+	int vbat_uv, ibat_ua;
 
 	charge_monitor_work = container_of(work, struct delayed_work, work);
 	if(charge_monitor_work == NULL) {
@@ -1424,6 +1589,28 @@ static void charger_monitor_work_func(struct work_struct *work)
 	if (!sgm->state.chrg_type) {
 		pr_err("%s not present vbus_status \n",__func__);
 		goto OUT;
+	}
+
+	/* enable dynamic adjust battery voltage */
+	if(sgm->enable_dynamic_adjust_batvol){
+		if (!sgm->battery)
+			sgm->battery = power_supply_get_by_name ("battery");
+		if (sgm->battery) {
+			power_supply_get_property(sgm->battery, POWER_SUPPLY_PROP_CURRENT_NOW, &val_battery);
+			if(val_battery.intval < 10000 && state.chrg_stat != SGM4154x_TERM_CHRG) {
+				pr_err("VBUS present but no charging current \n");
+				//sgm4154x_dump_register(sgm);
+			}
+
+			ibat_ua = val_battery.intval;
+			power_supply_get_property(sgm->battery, POWER_SUPPLY_PROP_VOLTAGE_NOW, &val_battery);
+			vbat_uv = val_battery.intval;
+			dev_err(sgm->dev, "vbat=%duV, cv=%duV\n", vbat_uv, sgm->final_cv);
+			dev_err(sgm->dev, "ibat=%duA, cc=%duA,tune=%d\n", ibat_ua, sgm->final_cc,sgm->cv_tune);
+			if ((ibat_ua > 10000 && ibat_ua < (sgm->final_cc - 100000)) || vbat_uv > sgm->final_cv) {
+				sgm4154x_adjust_constant_voltage(sgm, vbat_uv);
+			}
+		}
 	}
 
 	sgm4154x_dump_register(sgm);
@@ -1506,7 +1693,7 @@ static int sgm4154x_detected_qc3p_hvdcp(struct sgm4154x_device *sgm, int *charge
 		sgm->mmi_qc3p_power = MMI_POWER_SUPPLY_QC3P_NONE;
 		/*do qc3p rerun*/
 		dev_err(sgm->dev, "qc3p voltage is invalid, rerun qc3p detect\n");
-		if (!sgm->mmi_qc3p_rerun_done) {
+		if (!sgm->mmi_qc3p_rerun_done && !sgm->pd_active) {
 			sgm->mmi_qc3p_rerun_done = true;
 			sgm->mmi_qc3p_wa = true;
 			dp_val = 0x0<<3;
@@ -1578,7 +1765,7 @@ static int sgm4154x_detected_qc3p_hvdcp(struct sgm4154x_device *sgm, int *charge
 	} else {
 		dev_err(sgm->dev, "qc3p power is invalid, rerun qc3p detect\n");
 		//do rerun qc3p
-		if (!sgm->mmi_qc3p_rerun_done) {
+		if (!sgm->mmi_qc3p_rerun_done && !sgm->pd_active) {
 			sgm->mmi_qc3p_rerun_done = true;
 			sgm->mmi_qc3p_wa = true;
 			dp_val = 0x0<<3;
@@ -1685,6 +1872,13 @@ bool qc3p_detection_done(struct sgm4154x_device *chip)
 	int val = 0;
 	int delay_count =0;
 
+#ifdef CONFIG_MMI_SGM41513_CHARGER
+        if(chip->real_charger_type == POWER_SUPPLY_TYPE_USB_HVDCP) {
+              dev_info(chip->dev, "qc3p hvdcp detection already done, do not wait\n");
+	      return true;
+        }
+#endif
+
 	do {
 		ret = mmi_charger_read_iio_chan(chip, SMB5_QC3P_DETECTION_READY, &val);
 		if(ret )
@@ -1725,6 +1919,55 @@ bool qc3p_update_policy(struct sgm4154x_device *chip )
 	dev_info(chip->dev, "write SMB5_QC3P_START_POLICY IIO :%d\n",val);
 	return val;
 }
+
+#ifdef CONFIG_MMI_SGM41513_CHARGER
+int bc12_start_detection(struct sgm4154x_device *chip)
+{
+	int ret = 0;
+	ret = mmi_charger_write_iio_chan(chip, SMB5_BC12_START_DETECT, true);
+	if(ret )
+		dev_err(chip->dev, "Cann't write SMB5_BC12_START_DETECT IIO\n");
+
+	dev_info(chip->dev, "write SMB5_BC12_START_DETECT IIO success\n");
+	return 0;
+}
+
+bool bc12_detection_done(struct sgm4154x_device *chip)
+{
+	int ret = 0;
+	int val = 0;
+	int delay_count =0;
+
+	do {
+		ret = mmi_charger_read_iio_chan(chip, SMB5_BC12_DETECTION_READY, &val);
+		if(ret )
+			dev_err(chip->dev, "Cann't read SMB5_BC12_DETECTION_READY IIO\n");
+
+		dev_info(chip->dev, "read SMB5_BC12_DETECTION_READY IIO :%d\n",val);
+		if (val)
+			break;
+
+		msleep(50);
+		delay_count ++;
+	}while(delay_count <= 20);
+
+	dev_info(chip->dev, "read SMB5_BC12_DETECTION_READY IIO :%d\n",val);
+	return val;
+}
+
+int bc12_read_charger_type(struct sgm4154x_device *chip)
+{
+	int ret = 0;
+	int val = 0;
+
+	ret = mmi_charger_read_iio_chan(chip, SMB5_READ_BC12_CHG_TYPE, &val);
+	if(ret )
+		dev_err(chip->dev, "Cann't read SMB5_READ_BC12_CHG_TYPE IIO\n");
+
+	dev_info(chip->dev, "read SMB5_READ_BC12_CHG_TYPE IIO :%d\n",val);
+	return val;
+}
+#endif
 #endif
 
 static int mmi_hvdcp_detect_kthread(void *param)
@@ -1756,7 +1999,7 @@ static int mmi_hvdcp_detect_kthread(void *param)
 			goto out;
 		}
 
-		if (charger_type != POWER_SUPPLY_TYPE_USB_HVDCP)
+		if (charger_type != POWER_SUPPLY_TYPE_USB_HVDCP || sgm->pd_active)
 			goto out;
 
 		//do qc3.0 detected
@@ -1768,7 +2011,7 @@ static int mmi_hvdcp_detect_kthread(void *param)
 
 #ifdef CONFIG_MMI_QC3P_TURBO_CHARGER
 		//do qc3p detected
-		if (charger_type == POWER_SUPPLY_TYPE_USB_HVDCP_3) {
+		if (charger_type == POWER_SUPPLY_TYPE_USB_HVDCP_3 && !sgm->pd_active) {
 			ret = sgm4154x_detected_qc3p_hvdcp(sgm, &charger_type);
 			if (ret) {
 				dev_err(sgm->dev, "Cann't detected qc3p hvdcp\n");
@@ -1803,7 +2046,7 @@ static int mmi_hvdcp_detect_kthread(void *param)
 			}
 #endif
 		sgm4154x_get_usb_present(sgm);
-		if (!sgm->state.vbus_gd)
+		if (!sgm->state.vbus_gd || sgm->pd_active)
 			goto out;
 
 		sgm->real_charger_type = charger_type;
@@ -1827,12 +2070,81 @@ static void mmi_start_hvdcp_detect(struct sgm4154x_device *sgm)
 {
 
 	if (sgm->mmi_qc3_support
-		&& sgm->real_charger_type == POWER_SUPPLY_TYPE_USB_DCP) {
+		&& (!sgm->pd_active)
+		&& (sgm->real_charger_type == POWER_SUPPLY_TYPE_USB_DCP
+#ifdef CONFIG_MMI_SGM41513_CHARGER
+                || sgm->real_charger_type == POWER_SUPPLY_TYPE_USB_HVDCP
+#endif
+        )) {
 		dev_info(sgm->dev, "start hvdcp detect\n");
 		sgm->mmi_qc3_trig_flag = true;
 		wake_up_interruptible(&sgm->mmi_qc3_wait_que);
 	}
 }
+
+#ifdef CONFIG_MMI_SGM41513_CHARGER
+static bool mmi_start_bc12_charger_type_detect(struct sgm4154x_device *sgm, int *real_charger_type)
+{
+	bool result;
+	int ret;
+
+	bc12_start_detection(sgm);
+	bc12_detection_done(sgm);
+	ret = bc12_read_charger_type(sgm);
+
+	switch(ret)	{
+		case WT6670_CHG_TYPE_UNKNOWN:
+		case WT_CHG_TYPE_FC:
+		case WT_CHG_TYPE_OCP:
+			dev_err(sgm->dev, "unkown type have been detected !\n");
+			*real_charger_type = POWER_SUPPLY_TYPE_USB_FLOAT;
+			result = true;
+			break;
+		case WT_CHG_TYPE_SDP:
+			dev_err(sgm->dev, "SDP have been detected !\n");
+			*real_charger_type = POWER_SUPPLY_TYPE_USB;
+			result = true;
+			break;
+		case WT_CHG_TYPE_CDP:
+			dev_err(sgm->dev, "CDP have been detected !\n");
+			*real_charger_type = POWER_SUPPLY_TYPE_USB_CDP;
+			result = true;
+			break;
+		case WT_CHG_TYPE_DCP:
+			dev_err(sgm->dev, "DCP have been detected !\n");
+			*real_charger_type = POWER_SUPPLY_TYPE_USB_DCP;
+			mmi_start_hvdcp_detect(sgm);
+			result = true;
+			break;
+                case WT_CHG_TYPE_HVDCP:
+                        dev_err(sgm->dev, "quick plug out/in, HVDCP have been detected already !\n");
+			*real_charger_type = POWER_SUPPLY_TYPE_USB_HVDCP;
+			mmi_start_hvdcp_detect(sgm);
+			result = true;
+                        break;
+		default:
+			pr_err("bc12 charger type: default\n");
+			result = false;
+			break;
+	}
+
+#ifdef __SGM41513_CHIP_ID__
+	if (*real_charger_type == POWER_SUPPLY_TYPE_USB_CDP) {
+		ret = sgm4154x_set_dynamic_vindpm_track(sgm, sgm->init_data.vdpm_bat_track);
+		if (ret) {
+			dev_err(sgm->dev, "%s set dynamic vindpm track:%d failed\n", __func__, sgm->init_data.vdpm_bat_track);
+		}
+	} else {
+		ret = sgm4154x_set_dynamic_vindpm_track(sgm, 0);
+		if (ret) {
+			dev_err(sgm->dev, "%s disable dynamic vindpm track failed\n", __func__);
+		}
+	}
+#endif
+
+	return result;
+}
+#endif
 
 static void sgm4154x_vbus_remove(struct sgm4154x_device * sgm)
 {
@@ -1845,6 +2157,12 @@ static void sgm4154x_vbus_remove(struct sgm4154x_device * sgm)
 #endif
 #endif
 	cancel_delayed_work_sync(&sgm->charge_monitor_work);
+	/* enable dynamic adjust battery voltage */
+	if(sgm->enable_dynamic_adjust_batvol){
+		sgm->cv_tune = 0;
+		sgm4154x_set_chrg_adjust_volt(sgm, sgm->final_cv, 0);
+		mmi_regmap_update_bits(sgm, SGM4154x_CHRG_CTRL_f, SGM4154x_VREG_FT_MASK, 0);
+	}
 	sgm->pulse_cnt = 0;
 	sgm->mmi_qc3p_rerun_done = false;
 	sgm->mmi_qc3p_wa = false;
@@ -1855,12 +2173,18 @@ static void sgm4154x_vbus_remove(struct sgm4154x_device * sgm)
 	sgm->mmi_qc3p_power = MMI_POWER_SUPPLY_QC3P_NONE;
 	sgm4154x_request_dpdm(sgm, false);
 	charger_dev_notify(sgm->chg_dev);
+
+#ifdef __SGM41513_CHIP_ID__
+	sgm4154x_set_dynamic_vindpm_track(sgm, 0);
+#endif
 }
 
 static void sgm4154x_vbus_plugin(struct sgm4154x_device * sgm)
 {
-
-#if defined(__SGM41542_CHIP_ID__)|| defined(__SGM41516D_CHIP_ID__)
+#ifdef CONFIG_MMI_SGM41513_CHARGER
+	bool ret;
+#endif
+#if defined(__SGM41542_CHIP_ID__)|| defined(__SGM41516D_CHIP_ID__)  || defined(__SGM41513_CHIP_ID__)
 	if (((sgm->state.chrg_type == SGM4154x_USB_SDP) ||
 		(sgm->state.chrg_type == SGM4154x_NON_STANDARD) ||
 		(sgm->state.chrg_type == SGM4154x_UNKNOWN))
@@ -1877,10 +2201,17 @@ static void sgm4154x_vbus_plugin(struct sgm4154x_device * sgm)
 		}
 	}
 #endif
+
 	switch(sgm->state.chrg_type) {
 		case SGM4154x_USB_SDP:
 			pr_err("SGM4154x charger type: SDP\n");
+#ifndef CONFIG_MMI_SGM41513_CHARGER
 			sgm->real_charger_type = POWER_SUPPLY_TYPE_USB;
+#else
+			ret = mmi_start_bc12_charger_type_detect(sgm, &sgm->real_charger_type);
+			if (!ret)
+				return;
+#endif
 			break;
 
 		case SGM4154x_USB_CDP:
@@ -1908,7 +2239,6 @@ static void sgm4154x_vbus_plugin(struct sgm4154x_device * sgm)
 			pr_err("SGM4154x charger type: default\n");
 			return;
 	}
-
 #endif
 
 	schedule_delayed_work(&sgm->charge_monitor_work, 0);
@@ -1983,7 +2313,7 @@ static irqreturn_t sgm4154x_irq_handler_thread(int irq, void *private)
 
 	//lock wakelock
 	pr_err("%s entry\n",__func__);
-	#if defined(__SGM41542_CHIP_ID__)|| defined(__SGM41516D_CHIP_ID__)
+	#if defined(__SGM41542_CHIP_ID__)|| defined(__SGM41516D_CHIP_ID__) || defined(__SGM41513_CHIP_ID__)
 	schedule_work(&sgm->charge_detect_work);
 	//power_supply_changed(sgm->charger);
 	#endif
@@ -2081,7 +2411,12 @@ static int sgm4154x_hw_init(struct sgm4154x_device *sgm)
 	if (ret)
 		goto err_out;
 
-	ret = sgm4154x_set_chrg_volt(sgm,
+	/* enable dynamic adjust battery voltage */
+	if(sgm->enable_dynamic_adjust_batvol)
+		ret = sgm4154x_set_chrg_adjust_volt(sgm,
+				bat_info.constant_charge_voltage_max_uv, 0);
+	else
+	    ret = sgm4154x_set_chrg_volt(sgm,
 				bat_info.constant_charge_voltage_max_uv);
 	if (ret)
 		goto err_out;
@@ -2101,6 +2436,12 @@ static int sgm4154x_hw_init(struct sgm4154x_device *sgm)
 	ret = sgm4154x_set_vac_ovp(sgm);//14V
 	if (ret)
 		goto err_out;
+
+#ifdef __SGM41513_CHIP_ID__
+	ret = sgm4154x_set_dynamic_vindpm_track(sgm, 0);
+	if (ret)
+		goto err_out;
+#endif
 
 #ifdef CONFIG_MMI_QC3P_TURBO_CHARGER
        ret = sgm4154x_set_recharge_volt(sgm, 100);//100~200mv
@@ -2190,6 +2531,16 @@ static int sgm4154x_parse_dt(struct sgm4154x_device *sgm)
 	    sgm->init_data.ilim < SGM4154x_IINDPM_I_MIN_uA)
 		return -EINVAL;
 
+#ifdef __SGM41513_CHIP_ID__
+	if (of_property_read_u32(sgm->dev->of_node, "dynamic-vindpm-tracking-uv", &val) >= 0) {
+		sgm->init_data.vdpm_bat_track = val;
+		dev_err(sgm->dev, "dynamic-vindpm-tracking-uv: %d\n", sgm->init_data.vdpm_bat_track);
+	} else {
+		dev_err(sgm->dev, "no dynamic-vindpm-tracking-uv\n");
+		sgm->init_data.vdpm_bat_track = 0;
+	}
+#endif
+
 	irq_gpio = of_get_named_gpio(sgm->dev->of_node, "sgm,irq-gpio", 0);
 	if (!gpio_is_valid(irq_gpio))
 	{
@@ -2219,8 +2570,25 @@ static int sgm4154x_parse_dt(struct sgm4154x_device *sgm)
 		}
 		gpio_direction_output(chg_en_gpio,0);//default enable charge
 	}
+
+	/*wls outout en control*/
+	sgm->wls_en_gpio = of_get_named_gpio(sgm->dev->of_node, "mmi,wls-en-gpio", 0);
+	if (gpio_is_valid(sgm->wls_en_gpio))
+	{
+		ret = gpio_request(sgm->wls_en_gpio, "mmi wls en pin");
+		if (ret) {
+			dev_err(sgm->dev, "%s: %d gpio(wls en) request failed\n", __func__, sgm->wls_en_gpio);
+			return ret;
+		}
+
+		gpio_direction_output(sgm->wls_en_gpio, 0);//default enable wls charge
+	}
+
 	/* sw jeita */
 	sgm->enable_sw_jeita = of_property_read_bool(sgm->dev->of_node, "enable_sw_jeita");
+	/* enable dynamic adjust battery voltage */
+	sgm->enable_dynamic_adjust_batvol = of_property_read_bool(sgm->dev->of_node, "enable_dynamic_adjust_batvol");
+	dev_err(sgm->dev, "%s: enable_dynamic_adjust_batvol = %d \n", __func__, sgm->enable_dynamic_adjust_batvol);
 
 	if (of_property_read_u32(sgm->dev->of_node, "jeita_temp_above_t4_cv", &val) >= 0)
 		sgm->data.jeita_temp_above_t4_cv = val;
@@ -2383,6 +2751,12 @@ static int sgm4154x_enable_vbus(struct regulator_dev *rdev)
 	struct sgm4154x_device *sgm = rdev_get_drvdata(rdev);
 	int ret = 0;
 
+	/*disable wls output*/
+	if (gpio_is_valid(sgm->wls_en_gpio)) {
+		pr_err("%s,set wls en\n",__func__);
+		gpio_direction_output(sgm->wls_en_gpio, 1);
+	}
+
 	ret = mmi_regmap_update_bits(sgm, SGM4154x_CHRG_CTRL_1, SGM4154x_OTG_EN,
                      SGM4154x_OTG_EN);
 	return ret;
@@ -2395,6 +2769,12 @@ static int sgm4154x_disable_vbus(struct regulator_dev *rdev)
 
 	ret = mmi_regmap_update_bits(sgm, SGM4154x_CHRG_CTRL_1, SGM4154x_OTG_EN,
                      0);
+
+	/*resume wls output*/
+	if (gpio_is_valid(sgm->wls_en_gpio)) {
+		pr_err("%s,set wls dis\n",__func__);
+		gpio_direction_output(sgm->wls_en_gpio, 0);
+	}
 
 	return ret;
 }
@@ -2511,8 +2891,14 @@ static int sgm4154x_parse_dt_adc_channels(struct sgm4154x_device *sgm)
 {
 	int rc = 0;
 
+#ifdef CONFIG_MMI_SGM41513_CHARGER
+	rc = sgm4154x_get_iio_channel(sgm, "read_usbin_voltage",
+					&sgm->iio.usbin_v_chan);
+#else
 	rc = sgm4154x_get_iio_channel(sgm, "gpio3_div3",
 					&sgm->iio.usbin_v_chan);
+#endif
+
 	if (rc < 0)
 		return rc;
 
@@ -2586,7 +2972,11 @@ static int sgm4154x_set_charging_voltage(struct charger_device *chg_dev, u32 uV)
 	struct sgm4154x_device *sgm = dev_get_drvdata(&chg_dev->dev);
 	int rc = 0;
 
-	rc = sgm4154x_set_chrg_volt(sgm, uV);
+	/* enable dynamic adjust battery voltage */
+	if(sgm->enable_dynamic_adjust_batvol)
+	    rc = sgm4154x_set_chrg_adjust_volt(sgm, uV, 0);
+	else
+	    rc = sgm4154x_set_chrg_volt(sgm, uV);
 
 	pr_info("%s set charging volt = %d, %s\n", __func__, uV, rc ? "failed" : "success");
 
@@ -2678,6 +3068,14 @@ static int sgm4154x_set_dp_dm(struct charger_device *chg_dev, int val)
 		dev_dbg(sgm->dev, "DP_DM_DM_PULSE rc=%d cnt=%d\n",
 				rc, sgm->pulse_cnt);
 		break;
+	case MMI_POWER_SUPPLY_IGNORE_REQUEST_DPDM:
+		sgm->ignore_request_dpdm = true;
+		dev_dbg(sgm->dev, "MMI_POWER_SUPPLY_IGNORE_REQUEST_DPDM\n");
+		break;
+	case MMI_POWER_SUPPLY_DONOT_IGNORE_REQUEST_DPDM:
+		sgm->ignore_request_dpdm = false;
+		dev_dbg(sgm->dev, "MMI_POWER_SUPPLY_DONOT_IGNORE_REQUEST_DPDM\n");
+		break;
 	default:
 		break;
 	}
@@ -2692,6 +3090,15 @@ static int sgm4154x_get_real_charger_type(struct charger_device *chg_dev, int *c
 	struct sgm4154x_device *sgm = dev_get_drvdata(&chg_dev->dev);
 
 	*chg_type = sgm->real_charger_type;
+
+	return 0;
+}
+
+static int sgm4154x_config_pd_active(struct charger_device *chg_dev, int val)
+{
+	struct sgm4154x_device *sgm = dev_get_drvdata(&chg_dev->dev);
+
+	sgm->pd_active = val;
 
 	return 0;
 }
@@ -2735,6 +3142,7 @@ static struct charger_ops sgm4154x_chg_ops = {
 	.is_enabled_charging = sgm4154x_is_enabled_charging,
 	.enable_termination = sgm4154x_enable_termination,
 	.get_qc3p_power = sgm4154x_get_qc3p_power,
+	.config_pd_active = sgm4154x_config_pd_active,
 };
 
 static int sgm4154x_probe(struct i2c_client *client,
@@ -2753,6 +3161,8 @@ static int sgm4154x_probe(struct i2c_client *client,
 	sgm->client = client;
 	sgm->dev = dev;
 
+	sgm->ignore_request_dpdm = false;
+
 	mutex_init(&sgm->lock);
 	mutex_init(&sgm->regulator_lock);
 
@@ -2767,7 +3177,12 @@ static int sgm4154x_probe(struct i2c_client *client,
 	i2c_set_clientdata(client, sgm);
 
 	ret = sgm4154x_hw_chipid_detect(sgm);
-	if ((ret & SGM4154x_PN_MASK) != SGM4154x_PN_41542_ID){
+#ifdef __SGM41513_CHIP_ID__
+	if ((ret & SGM4154x_PN_MASK) != SGM4154x_PN_41513_ID){
+
+#else
+	if (((ret & SGM4154x_PN_MASK) != SGM4154x_PN_41542_ID) && ((ret & SGM4154x_PN_MASK) != SGM4154x_PN_41543D_ID)){
+#endif
 		pr_info("[%s] device not found !!!\n", __func__);
 		return ret;
 	}
@@ -2913,6 +3328,11 @@ static void sgm4154x_charger_shutdown(struct i2c_client *client)
     if (ret) {
         pr_err("Failed to disable charger, ret = %d\n", ret);
     }
+	/* enable dynamic adjust battery voltage */
+	if(sgm->enable_dynamic_adjust_batvol){
+	    sgm4154x_set_chrg_adjust_volt(sgm, sgm->final_cv, 0);
+	    mmi_regmap_update_bits(sgm, SGM4154x_CHRG_CTRL_f, SGM4154x_VREG_FT_MASK, 0);
+	}
     pr_info("sgm4154x_charger_shutdown\n");
 }
 
@@ -2921,6 +3341,8 @@ static const struct i2c_device_id sgm4154x_i2c_ids[] = {
 	{ "sgm41542", 0 },
 	{ "sgm41516", 0 },
 	{ "sgm41516D", 0 },
+	{ "sgm41513", 0 },
+	{ "sgm41543D", 0},
 	{},
 };
 MODULE_DEVICE_TABLE(i2c, sgm4154x_i2c_ids);
@@ -2930,6 +3352,8 @@ static const struct of_device_id sgm4154x_of_match[] = {
 	{ .compatible = "sgm,sgm41542" },
 	{ .compatible = "sgm,sgm41516" },
 	{ .compatible = "sgm,sgm41516D" },
+	{ .compatible = "sgm,sgm41513" },
+	{ .compatible = "sgm,sgm41543D"},
 	{ },
 };
 MODULE_DEVICE_TABLE(of, sgm4154x_of_match);
