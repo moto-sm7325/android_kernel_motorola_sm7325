@@ -1,5 +1,1 @@
-EXTRA_CFLAGS += -Wall
-EXTRA_CFLAGS += -I$(TOP)/motorola/kernel/modules/include
-
-
-obj-m += ledtrig-sol.o
+obj-$(CONFIG_LEDS_TRIGGER_SOL)		+= ledtrig-sol.o
