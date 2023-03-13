@@ -418,6 +418,7 @@ struct dsi_panel {
 	u8 fod_dim_alpha;
 	bool fod_hbm_enabled;
 	bool fod_ui;
+	bool dc_dimming_enabled;
 };
 
 bool dsi_display_all_displays_dead(void);

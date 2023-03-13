@@ -1232,7 +1232,7 @@ static ssize_t dsi_display_dc_get(struct device *dev,
 		return snprintf(buf, PAGE_SIZE, "%d\n", 0);
 	}
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", display->panel->dc_state);
+	return snprintf(buf, PAGE_SIZE, "%d\n", display->panel->	dc_state);
 }
 
 static ssize_t dsi_display_dc_set(struct device *dev,
