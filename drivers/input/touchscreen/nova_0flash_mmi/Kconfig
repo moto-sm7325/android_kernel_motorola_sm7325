@@ -103,15 +103,15 @@ config INPUT_NOVA_0FLASH_MMI_STYLUS_PALM_RANGE
 
 	  If unsure, say N.
 
-config INPUT_NOVA_0FLASH_MMI_PEN_NOTIFIER
-	bool "Moto Novatek NT36xxx pen notifier"
-	depends on PEN_BU520XX
-	default n
-	help
-	  Say Y here if you want to have pen notifier support on Moto Novatek
-	  NT36xxx.
+# config INPUT_NOVA_0FLASH_MMI_PEN_NOTIFIER
+# 	bool "Moto Novatek NT36xxx pen notifier"
+# 	depends on PEN_BU520XX
+# 	default n
+# 	help
+# 	  Say Y here if you want to have pen notifier support on Moto Novatek
+# 	  NT36xxx.
 
-	  If unsure, say N.
+# 	If unsure, say N.
 
 config INPUT_NOVA_EDGE_SUPPRESSION
 	bool "Moto Novatek NT36xxx EDGE touch suppression"

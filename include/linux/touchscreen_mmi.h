@@ -238,6 +238,9 @@ static inline unsigned long long timediff_ms(
 #define TS_MMI_MAX_CLASS_NAME_LEN	16
 #define TS_MMI_MAX_PANEL_LEN		16
 #define TS_MMI_PILL_REGION_REQ_ARGS_NUM	3
+#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+#define TS_MMI_ACTIVE_REGION_REQ_ARGS_NUM 4
+#endif
 #define TS_MMI_FW_PARAM_PATH	"/data/vendor/param/touch/"
 
 enum touch_event_mode {
@@ -378,6 +381,9 @@ enum ts_mmi_work {
 	int	(*get_poison_timeout)(struct device *dev, void *idata);
 	int	(*get_poison_distance)(struct device *dev, void *idata);
 	int	(*get_poison_trigger_distance)(struct device *dev, void *idata);
+#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+	int	(*get_active_region)(struct device *dev, void *uiadata);
+#endif
 	/* SET methods */
 	int	(*reset)(struct device *dev, int type);
 	int	(*drv_irq)(struct device *dev, int state);
@@ -396,8 +402,9 @@ enum ts_mmi_work {
 	int	(*poison_distance)(struct device *dev, int dis);
 	int	(*poison_trigger_distance)(struct device *dev, int dis);
 	int	(*update_baseline)(struct device *dev, int enable);
-#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 	int	(*update_fod_mode)(struct device *dev, int enable);
+#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+	int	(*active_region)(struct device *dev, int *region_array);
 #endif
 	/* Firmware */
 	int	(*firmware_update)(struct device *dev, char *fwname);
@@ -426,9 +433,7 @@ enum ts_mmi_work {
 struct ts_mmi_dev_pdata {
 	bool		power_off_suspend;
 	bool		fps_detection;
-#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 	bool		fod_detection;
-#endif
 	bool		usb_detection;
 	bool		update_refresh_rate;
 	bool		gestures_enabled;
@@ -440,12 +445,13 @@ struct ts_mmi_dev_pdata {
 	bool		gs_distance_ctrl;
 	bool		hold_grip_ctrl;
 	bool		poison_slot_ctrl;
+#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+	bool		active_region_ctrl;
+#endif
 	int		max_x;
 	int		max_y;
-#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI)
 	int		fod_x;
 	int		fod_y;
-#endif
 	int 		ctrl_dsi;
 	int		reset;
 	const char	*class_entry_name;
@@ -482,6 +488,9 @@ struct ts_mmi_dev {
 #endif
 	int			panel_status;
 	struct ts_mmi_dev_pdata	pdata;
+#if defined(CONFIG_DRM_PANEL_NOTIFICATIONS) || defined (CONFIG_DRM_PANEL_EVENT_NOTIFICATIONS)
+	struct drm_panel *active_panel;
+#endif
 #ifdef CONFIG_DRM_PANEL_EVENT_NOTIFICATIONS
 	void *notifier_cookie;
 #else
@@ -530,6 +539,9 @@ struct ts_mmi_dev {
 	int			flashprog;
 	int			suppression;
 	unsigned int		pill_region[TS_MMI_PILL_REGION_REQ_ARGS_NUM];
+#if IS_ENABLED(CONFIG_INPUT_TOUCHSCREEN_MMI_V1)
+	unsigned int		active_region[TS_MMI_ACTIVE_REGION_REQ_ARGS_NUM];
+#endif
 	int			hold_distance;
 	int			gs_distance;
 	int			hold_grip;

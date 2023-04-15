@@ -78,16 +78,12 @@ static int ts_mmi_panel_off(struct ts_mmi_dev *touch_cdev) {
 #endif
 	TRY_TO_CALL(post_suspend);
 
-	touch_cdev->double_tap_enabled_prev = false;
-
 	dev_info(DEV_MMI, "%s: done\n", __func__);
 
 	return 0;
 }
 
 static int inline ts_mmi_panel_on(struct ts_mmi_dev *touch_cdev) {
-	touch_cdev->double_tap_pressed = false;
-
 	atomic_set(&touch_cdev->resume_should_stop, 0);
 	kfifo_put(&touch_cdev->cmd_pipe, TS_MMI_DO_RESUME);
 	/* schedule_delayed_work returns true if work has been scheduled */
@@ -236,6 +232,8 @@ static inline void ts_mmi_restore_settings(struct ts_mmi_dev *touch_cdev)
 		TRY_TO_CALL(hold_distance, (int)touch_cdev->hold_distance);
 	if (touch_cdev->pdata.gs_distance_ctrl)
 		TRY_TO_CALL(gs_distance, (int)touch_cdev->gs_distance);
+	if (touch_cdev->pdata.active_region_ctrl)
+		TRY_TO_CALL(active_region, (unsigned int *)touch_cdev->active_region);
 
 	dev_dbg(DEV_MMI, "%s: done\n", __func__);
 }
@@ -272,7 +270,9 @@ static void ts_mmi_queued_resume(struct ts_mmi_dev *touch_cdev)
 			touch_cdev->delay_baseline_update = false;
 		}
 	}
-
+	if (touch_cdev->pdata.fod_detection) {
+		TRY_TO_CALL(update_fod_mode, touch_cdev->fps_state);
+	}
 	if (NEED_TO_SET_POWER) {
 		/* power turn on in PANEL_EVENT_PRE_DISPLAY_ON.
 		 * IC need some time to boot up.
@@ -338,14 +338,20 @@ static void ts_mmi_worker_func(struct work_struct *w)
 			TRY_TO_CALL(refresh_rate, (int)touch_cdev->refresh_rate);
 				break;
 		case TS_MMI_DO_FPS:
-			if (touch_cdev->fps_state) {/* on */
-				TRY_TO_CALL(update_baseline, TS_MMI_UPDATE_BASELINE_OFF);
-				touch_cdev->delay_baseline_update = true;
-			} else { /* off */
-				if (touch_cdev->delay_baseline_update) {
-					TRY_TO_CALL(update_baseline, TS_MMI_UPDATE_BASELINE_ON);
-					touch_cdev->delay_baseline_update = false;
+			if (touch_cdev->pdata.fps_detection) {
+				if (touch_cdev->fps_state) {/* on */
+					TRY_TO_CALL(update_baseline, TS_MMI_UPDATE_BASELINE_OFF);
+
+					touch_cdev->delay_baseline_update = true;
+				} else { /* off */
+					if (touch_cdev->delay_baseline_update) {
+						TRY_TO_CALL(update_baseline, TS_MMI_UPDATE_BASELINE_ON);
+						touch_cdev->delay_baseline_update = false;
+					}
 				}
+			}
+			if (touch_cdev->pdata.fod_detection) {
+				TRY_TO_CALL(update_fod_mode, touch_cdev->fps_state);
 			}
 				break;
 
@@ -550,7 +556,7 @@ int ts_mmi_notifiers_register(struct ts_mmi_dev *touch_cdev)
 			goto FREQ_NOTIF_REGISTER_FAILED;
 	}
 
-	if (touch_cdev->pdata.fps_detection) {
+	if (touch_cdev->pdata.fps_detection || touch_cdev->pdata.fod_detection) {
 		ret = ts_mmi_fps_notifier_register(touch_cdev, true);
 		if (ret < 0)
 			dev_err(DEV_TS,
@@ -575,7 +581,7 @@ void ts_mmi_notifiers_unregister(struct ts_mmi_dev *touch_cdev)
 		return;
 	}
 
-	if (touch_cdev->pdata.fps_detection)
+	if (touch_cdev->pdata.fps_detection || touch_cdev->pdata.fod_detection)
 		ts_mmi_fps_notifier_register(touch_cdev, false);
 
 	if (touch_cdev->pdata.update_refresh_rate)
