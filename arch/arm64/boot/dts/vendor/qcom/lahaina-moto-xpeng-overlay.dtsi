@@ -89,7 +89,7 @@
 			label = "assist_key";
 			gpios = <&tlmm 34 0x1>;
 			linux,input-type = <1>;
-			linux,code = <KEY_SEARCH>;
+			linux,code = <KEY_ASSISTANT>;
 			debounce-interval = <15>;
 			linux,can-disable;
 			gpio-key,wakeup;
