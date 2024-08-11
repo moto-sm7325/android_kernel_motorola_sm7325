@@ -27,7 +27,7 @@
 			label = "google_key";
 			gpios = <&tlmm 43 GPIO_ACTIVE_LOW>;
 			linux,input-type = <1>;
-			linux,code = <KEY_SEARCH>;
+			linux,code = <KEY_ASSISTANT>;
 			gpio-key,wakeup;
 			debounce-interval = <15>;
 			linux,can-disable;
