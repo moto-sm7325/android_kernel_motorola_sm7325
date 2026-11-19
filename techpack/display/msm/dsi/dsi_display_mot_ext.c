@@ -1113,25 +1113,27 @@ static ssize_t dsi_display_hbm_set(struct device *dev,
 	struct dsi_display *display;
 	struct msm_param_info param_info;
 	u16 val = 0;
+	int rc;
 
 	display = dev_get_drvdata(dev);
 	if (!display) {
 		pr_err("Invalid display\n");
-		return count;
+		return -ENODEV;
 	}
 
 	if (kstrtou16(buf, 10, &val) < 0)
-		return count;
+		return -EINVAL;
 
 	param_info.value = val ? HBM_ON_STATE : HBM_OFF_STATE;
 	param_info.param_idx = PARAM_HBM_ID;
 	param_info.param_conn_idx = CONNECTOR_PROP_HBM;
 
-	if (!dsi_panel_initialized(display->panel))
-		return count;
-
-	if (dsi_panel_set_param(display->panel, &param_info) < 0)
-		pr_err("Failed to set panel parameter id: %d\n", param_info.param_idx);
+	rc = dsi_display_set_param(display, &param_info);
+	if (rc < 0) {
+		pr_err("Failed to set panel parameter id: %d, rc: %d\n",
+			param_info.param_idx, rc);
+		return rc;
+	}
 
 	return count;
 }

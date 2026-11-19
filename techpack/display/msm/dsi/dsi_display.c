@@ -290,9 +290,18 @@ int dsi_display_set_param(void *display, struct msm_param_info *param_info)
 		return -EINVAL;
 
 	rc = dsi_panel_set_param(panel, param_info);
-	if (rc)
+	if (rc) {
 		DSI_ERR("[%s] failed to panel to set param. rc=%d\n",
 				dsi_display->name, rc);
+	} else if (param_info->param_idx == PARAM_HBM_ID) {
+		/*
+		 * Track HBM requested from outside the FOD flow so that
+		 * tearing the FOD UI down later does not clear it. FOD issues
+		 * its own requests via dsi_panel_set_fod_hbm() and never comes
+		 * through here.
+		 */
+		panel->hbm_user_enabled = (param_info->value == HBM_ON_STATE);
+	}
 	return rc;
 }
 

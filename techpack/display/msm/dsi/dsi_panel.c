@@ -1141,15 +1141,17 @@ static int dsi_panel_set_hbm(struct dsi_panel *panel,
 	rc = dsi_panel_send_param_cmd(panel, param_info);
 	if (rc < 0) {
 		DSI_ERR("%s: failed to send param cmds. ret=%d\n", __func__, rc);
-	} else {
-		if(lhbm_config->enable)
-			bl_lvl = lhbm_config->dbv_level;
-		else
-			bl_lvl = HBM_BRIGHTNESS(param_info->value);
-		rc = dsi_panel_set_backlight(panel, bl_lvl);
-		if (rc)
-			DSI_ERR("unable to set backlight\n");
+		return rc;
 	}
+
+	if (lhbm_config->enable)
+		bl_lvl = lhbm_config->dbv_level;
+	else
+		bl_lvl = HBM_BRIGHTNESS(param_info->value);
+
+	rc = dsi_panel_set_backlight(panel, bl_lvl);
+	if (rc)
+		DSI_ERR("unable to set backlight\n");
 
 	panel->hbm_state = param_info->value;
 
@@ -1160,6 +1162,17 @@ int dsi_panel_set_fod_hbm(struct dsi_panel *panel, bool status)
 {
 	struct msm_param_info param_info;
 	int rc;
+
+	/*
+	 * HBM can be turned on by the user (e.g. LiveDisplay sunlight
+	 * enhancement) as well as by the fingerprint flow. FOD only borrows
+	 * the panel for the duration of a fingerprint session, so tearing the
+	 * FOD UI down must not switch the user's HBM off.
+	 */
+	if (!status && panel->hbm_user_enabled && panel->hbm_state) {
+		panel->fod_hbm_enabled = false;
+		return 0;
+	}
 
 	param_info.value = status ? HBM_ON_STATE : HBM_OFF_STATE;
 	param_info.param_idx = PARAM_HBM_ID;
@@ -1251,7 +1264,7 @@ int dsi_panel_set_param(struct dsi_panel *panel,
 
 	switch (param_info->param_idx) {
 		case PARAM_HBM_ID :
-			dsi_panel_set_hbm(panel, param_info);
+			rc = dsi_panel_set_hbm(panel, param_info);
 			break;
 		case PARAM_CABC_ID :
 			dsi_panel_set_cabc(panel, param_info);

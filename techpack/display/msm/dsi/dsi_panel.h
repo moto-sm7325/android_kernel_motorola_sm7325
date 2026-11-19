@@ -416,6 +416,7 @@ struct dsi_panel {
 	unsigned int fod_dim_lut_len;
 	u8 fod_dim_alpha;
 	bool fod_hbm_enabled;
+	bool hbm_user_enabled;
 	bool fod_ui;
 };
 
